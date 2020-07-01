@@ -59,7 +59,13 @@ Schedule_t scheduleIn = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
 Schedule_t scheduleOut = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
 
 const char* time_server = "time1.navy.mi.th";
-// const uint16_t localPort = 8888;
+
+     
+IPAddress local_ip = {10, 0, 0, 3};
+IPAddress gateway = {10, 0, 0, 1};
+IPAddress subnet = {255, 255, 255, 240};
+IPAddress dns = {1, 1, 1, 1};
+
 
 WiFiUDP udp;
 WiFiConnector wifi(ssid, pass);
@@ -87,6 +93,7 @@ void init_hardware(){
 }
 
 void init_wifi(){
+  WiFi.config(local_ip, gateway, subnet, dns);
   wifi.init();
   wifi.on_connected([&](const void* message)
   {
