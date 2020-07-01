@@ -4,6 +4,8 @@
 #include <time.h>
 #include <Ticker.h>
 #include <AceTime.h>
+#include <EEPROM.h>
+
 using namespace ace_time;
 using namespace ace_time::clock;
 
@@ -38,17 +40,16 @@ typedef struct __attribute((__packed__)) Schedule_t{
   uint8_t RelayId;
 };
 
-
 String ssid = "IoT";
 String pass = "59122420124";
 
 #define MESSAGE_MAGIC 0xBEEF
 #define LED_SYNC_SUCCESS 14
-#define MAX_SCHEDULES 255
+#define MAX_SCHEDULES 10
 #define MAX_RELAY 2
 #define SERVER_PORT 8090
 #define UDP_PORT 8888
-#define NTP_PACKET_SIZE 48
+// #define NTP_PACKET_SIZE 48
 
 uint8_t relays_output[MAX_RELAY] = {0};
 uint8_t relays_output_pin[MAX_RELAY] = {12, 13};
@@ -66,7 +67,6 @@ IPAddress gateway = {10, 0, 0, 1};
 IPAddress subnet = {255, 255, 255, 240};
 IPAddress dns = {1, 1, 1, 1};
 
-
 WiFiUDP udp;
 WiFiConnector wifi(ssid, pass);
 WiFiServer server(SERVER_PORT);
@@ -79,8 +79,10 @@ acetime_t nowSeconds;
 static NtpClock ntpClock;
 static SystemClockLoop systemClock(nullptr /*reference*/, nullptr /*backup*/);
 
-uint8_t packetBuffer[NTP_PACKET_SIZE];
+// uint8_t packetBuffer[NTP_PACKET_SIZE];
 uint8_t time_sync_done = 0;
+uint8_t schedule_has_change = 0;
+uint16_t schedule_save_left = 10; // 10 seconds
 
 void init_hardware(){
   Serial.begin(115200);
@@ -121,29 +123,48 @@ void init_communication(){
   msgOut.Magic = MESSAGE_MAGIC;
 }
 
+void SaveSchedule(){
+  Serial.println("Writing schedule to EEPROM");
+  for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
+    int address = i * sizeof(Schedule_t);
+    EEPROM.put(address, schedules[i]);
+  }
+  if (EEPROM.commit()) {
+    Serial.println("EEPROM successfully committed");
+  } else {
+    Serial.println("ERROR! EEPROM commit failed");
+  }
+}
+
+void LoadSchedule(){
+  Serial.println("Loading schedule from EEPROM");
+  for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
+    int address = i * sizeof(Schedule_t);
+    EEPROM.get(address, schedules[i]);
+  }
+}
+
 void ProcessScheduler(uint8_t hour, uint8_t minute){
   for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
     if (schedules[i].Enable){
       // uint8_t sOnHour = (uint8_t)(schedules[i].TimeOn / 100);
       // uint8_t sOnMin = (uint8_t)(schedules[i].TimeOn % 100);
       uint16_t curTime = (hour * 100) + minute;
+
+      // Between On time and Off time
       if (curTime >= schedules[i].TimeOn && curTime < schedules[i].TimeOff){
-        
+
         if (!relays_output[schedules[i].RelayId]){
           relays_output[schedules[i].RelayId] = 1;
-          Serial.print("Relay ");
-          Serial.print(schedules[i].RelayId);
-          Serial.println(": ON");
+          Serial.print("Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> ON");
           ProcessRelaysOutput();
         }
-        //Turn on
-      } else {
-        
+
+      //Current time > Off time
+      } else if (curTime >= schedules[i].TimeOff) {
         if (relays_output[schedules[i].RelayId]){
           relays_output[schedules[i].RelayId] = 0;
-          Serial.print("Relay ");
-          Serial.print(schedules[i].RelayId);
-          Serial.println(": OFF");
+          Serial.print("Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> OFF");
           ProcessRelaysOutput();
         }
         
@@ -153,32 +174,49 @@ void ProcessScheduler(uint8_t hour, uint8_t minute){
   }
 }
 
-bool printCurTime = false;
+uint8_t printCurTime = 0;
 void tick()
 {
     acetime_t now = systemClock.getNow();
-    time_sync_done = (bool)(now > 646832014);
+    time_sync_done = (now > 646832014);
     digitalWrite(LED_SYNC_SUCCESS, time_sync_done);
 
     if (time_sync_done) {
       auto bangkokTime = ZonedDateTime::forEpochSeconds(now, bangkokTz);
       ProcessScheduler(bangkokTime.hour(), bangkokTime.minute());
       if (!printCurTime){
-        printCurTime = true;
+        printCurTime = 1;
         bangkokTime.printTo(SERIAL_PORT_MONITOR);
       }
       // SERIAL_PORT_MONITOR.println("");
+    }
+
+    if (schedule_has_change){
+      if (schedule_save_left > 0){
+        schedule_save_left--;
+      } else {
+        schedule_has_change = 0;
+        schedule_save_left = 10;
+        // Serial.println();
+        SaveSchedule();
+      }
+
     }
 }
 
 void setup()
 {
+  EEPROM.begin(60);
+  LoadSchedule();
+
   systemClock.setup();
   init_pin();
 	init_hardware();
   init_wifi();
   init_communication();
+
   
+
   wifi.connect();
   udp.begin(UDP_PORT);
   server.begin();
@@ -191,32 +229,50 @@ void ProcessRelaysOutput(){
   }
 }
 
-bool ValidRequestRelay(){
+uint8_t ValidRelayId(uint8_t relayId){
+   return relayId < MAX_RELAY;
+}
+
+uint8_t ValidRelayMode(uint8_t mode){
+   return mode < 2;
+}
+
+uint8_t ValidRequestRelay(){
   // msgIn.Parameter0; //Relay Index
   // msgIn.Parameter1; //Relay Mode
-  if (msgIn.Parameter0 >= MAX_RELAY){
+  if (!ValidRelayId(msgIn.Parameter0)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::ManualSetRelay;
     msgOut.Parameter1 = 1;
-    return false;
+    return 0;
   }
-  if (msgIn.Parameter1 > 1){
+  if (!ValidRelayMode(msgIn.Parameter1)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::ManualSetRelay;
     msgOut.Parameter1 = 2;
-    return false;
+    return 0;
   }
-  return true;
+  return 1;
 }
 
-bool ValidRequestSchedule(){
+uint8_t ValidScheduleId(uint8_t scheduleId){
+  return scheduleId < MAX_SCHEDULES;
+}
+
+uint8_t ValidRequestSchedule(){
   // msgIn.Parameter0; //Schedule Index
   // msgIn.Parameter1; //Relay Mode
-  if (msgIn.Parameter0 >= MAX_SCHEDULES){
+  if (!ValidScheduleId(msgIn.Parameter0)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::SetSchedule;
     msgOut.Parameter1 = 1;
-    return false;
+    return 0;
+  }
+  if (!ValidRelayId(scheduleIn.RelayId)){
+    msgOut.Command = Command_t::InvalidParameter;
+    msgOut.Parameter0 = Command_t::SetSchedule;
+    msgOut.Parameter1 = 2;
+    return 0;
   }
   // if (msgIn.Parameter1 > 1){
   //   msgOut.Command = Command_t::InvalidParameter;
@@ -224,7 +280,7 @@ bool ValidRequestSchedule(){
   //   msgOut.Parameter1 = 2;
   //   return false;
   // }
-  return true;
+  return 1;
 }
 
 void ProcessRequest(){
@@ -277,20 +333,23 @@ void ProcessRequest(){
     case Command_t::SetSchedule:
       Serial.println("SetSchedule");
       msgOut.Command = Command_t::SetSchedule;
+
+      
       if (ValidRequestSchedule()){
         msgOut.Parameter0 = msgIn.Parameter0; //Schedule Index
-        // msgOut.Parameter1 = relays_output[msgIn.Parameter0]; //relay status
-      }
 
-      Serial.print("TimeOn: ");
-      Serial.println(scheduleIn.TimeOn);
-      Serial.print("TimeOff: ");
-      Serial.println(scheduleIn.TimeOff);
-      Serial.print("Enable: ");
-      Serial.println(scheduleIn.Enable);
-      Serial.print("RelayId: ");
-      Serial.println(scheduleIn.RelayId);
-      schedules[msgIn.Parameter0] = scheduleIn;
+        Serial.print("TimeOn: ");
+        Serial.println(scheduleIn.TimeOn);
+        Serial.print("TimeOff: ");
+        Serial.println(scheduleIn.TimeOff);
+        Serial.print("Enable: ");
+        Serial.println(scheduleIn.Enable);
+        Serial.print("RelayId: ");
+        Serial.println(scheduleIn.RelayId);
+        schedules[msgIn.Parameter0] = scheduleIn;
+        schedule_has_change = 1;
+        schedule_save_left = 10;
+      }
       break;
     default:
       msgOut.Command = Command_t::InvalidRequest;
@@ -363,7 +422,7 @@ void tcpLoop(){
 
 unsigned long ntp_millis = 0;
 unsigned long second_millis = 0;
-bool ntp_first_run = true;
+uint8_t ntp_first_run = 1;
 void loop()
 {
 	wifi.loop();
@@ -387,7 +446,7 @@ void loop()
         auto bangkokTime = ZonedDateTime::forEpochSeconds(nowSeconds, bangkokTz);
         systemClock.setNow(bangkokTime.toEpochSeconds());
         second_tick.attach(1, tick);
-        ntp_first_run = false;
+        ntp_first_run = 0;
         return;
       }
 
