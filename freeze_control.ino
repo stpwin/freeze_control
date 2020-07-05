@@ -42,9 +42,10 @@ typedef struct __attribute((__packed__)) Schedule_t{
 
 String ssid = "IoT";
 String pass = "59122420124";
+const char* time_server = "time1.navy.mi.th";
 
 #define MESSAGE_MAGIC 0xBEEF
-#define LED_SYNC_SUCCESS_PIN LED_BUILTIN//15
+#define LED_SYNC_SUCCESS_PIN LED_BUILTIN
 #define TIMER_MODE_PIN 14
 #define MAX_SCHEDULES 10
 #define MAX_RELAY 2
@@ -53,21 +54,17 @@ String pass = "59122420124";
 #define EEPROM_SYSTEM_CONFIG_SIZE 4
 #define EEPROM_RELAY_OUTPUT_CONFIG_SIZE EEPROM_SYSTEM_CONFIG_SIZE + (MAX_RELAY * 4)
 
-uint8_t relays_output_pin[MAX_RELAY] = {12, 13};
-uint8_t relays_manual_button_pin[MAX_RELAY] = {4, 5};
-// uint8_t relays_mode[MAX_RELAY] = {0}; // for separate mode per relay
-
-
-Schedule_t schedules[MAX_SCHEDULES];
-Schedule_t scheduleIn = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
-Schedule_t scheduleOut = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
-
-const char* time_server = "time1.navy.mi.th";
-
 IPAddress local_ip = {10, 0, 0, 3};
 IPAddress gateway = {10, 0, 0, 1};
 IPAddress subnet = {255, 255, 255, 240};
 IPAddress dns = {1, 1, 1, 1};
+
+uint8_t relays_output_pin[MAX_RELAY] = {12, 13};
+uint8_t relays_manual_button_pin[MAX_RELAY] = {4, 5};
+
+Schedule_t schedules[MAX_SCHEDULES];
+Schedule_t scheduleIn = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
+Schedule_t scheduleOut = {.TimeOn = 0, .TimeOff = 0, .Enable = 0, .RelayId = 0};
 
 WiFiUDP udp;
 WiFiConnector wifi(ssid, pass);
@@ -86,7 +83,6 @@ uint8_t relay_mode_changed = 0;
 uint8_t relays_output_changed = 0;
 uint8_t eeprom_save_left_secs = 10; // 10 seconds
 volatile uint8_t mode = 0; // 0 = Timer, 1 = Manual
-// volatile uint8_t relays_manual_button_pressed[MAX_RELAY] = {1}; 
 volatile uint8_t relays_output[MAX_RELAY] = {0};
 
 uint8_t print_current_time = 0;
@@ -115,33 +111,6 @@ ICACHE_RAM_ATTR void ButtonManualRelayInterrupt0(){
 
 ICACHE_RAM_ATTR void ButtonManualRelayInterrupt1(){
   button2 = 1;
-}
-
-void buttonLoop(){
-  if (button0){
-    button0 = 0;
-    blink = 1;
-    mode = 0;
-    relay_mode_changed = 1;
-    resetEEPROMSaveCounter();
-  } else if (button1){
-    button1 = 0;
-
-    mode = 1;
-    relays_output[0] = !relays_output[0];
-
-    relays_output_changed = 1;
-    ProcessRelaysOutput();
-    resetEEPROMSaveCounter();
-  } else if (button2){
-    button2 = 0;
-
-    mode = 1;
-    relays_output[1] = !relays_output[1];
-    relays_output_changed = 1;
-    ProcessRelaysOutput();
-    resetEEPROMSaveCounter();
-  }
 }
 
 void init_hardware(){
@@ -189,7 +158,7 @@ void init_communication(){
   msgOut.Magic = MESSAGE_MAGIC;
 }
 
-void SaveSystemConfig(){
+void saveSystemConfig(){
   Serial.println("Writing system's config from EEPROM");
   EEPROM.put(0, mode);
   if (EEPROM.commit())
@@ -200,14 +169,14 @@ void SaveSystemConfig(){
   }
 }
 
-void LoadSystemConfig(){
+void loadSystemConfig(){
   Serial.println("Loading system's config from EEPROM");
   EEPROM.get(0, mode);
   Serial.print("Mode: ");
   Serial.println(mode);
 }
 
-void SaveRelayOutputConfig(){
+void saveRelayOutputConfig(){
   Serial.println("Writing relay output started to EEPROM");
   for (uint8_t i = 0; i < MAX_RELAY; i++){
     int address = (i * 4) + EEPROM_SYSTEM_CONFIG_SIZE;
@@ -222,7 +191,7 @@ void SaveRelayOutputConfig(){
   }
 }
 
-void LoadRelayOutputConfig(){
+void loadRelayOutputConfig(){
   Serial.println("Loading relay output started to EEPROM");
   for (uint8_t i = 0; i < MAX_RELAY; i++){
     int address = (i * 4) + EEPROM_SYSTEM_CONFIG_SIZE;
@@ -230,7 +199,7 @@ void LoadRelayOutputConfig(){
   }
 }
 
-void SaveScheduleConfig(){
+void saveScheduleConfig(){
   Serial.println("Writing schedule to EEPROM");
   size_t struct_size = sizeof(Schedule_t);
   for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
@@ -244,85 +213,13 @@ void SaveScheduleConfig(){
   }
 }
 
-void LoadScheduleConfig(){
+void loadScheduleConfig(){
   Serial.println("Loading schedule from EEPROM");
   size_t struct_size = sizeof(Schedule_t);
   for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
     int address = (i * struct_size) + EEPROM_RELAY_OUTPUT_CONFIG_SIZE;
     EEPROM.get(address, schedules[i]);
   }
-}
-
-void ProcessScheduler(uint8_t hour, uint8_t minute){
-  if (mode == 1){
-    return;
-  }
-  for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
-    if (schedules[i].Enable){
-      // uint8_t sOnHour = (uint8_t)(schedules[i].TimeOn / 100);
-      // uint8_t sOnMin = (uint8_t)(schedules[i].TimeOn % 100);
-      uint16_t curTime = (hour * 100) + minute;
-      // Between On time and Off time
-      if (curTime >= schedules[i].TimeOn && curTime != schedules[i].TimeOff){
-        if (!relays_output[schedules[i].RelayId]){
-          relays_output[schedules[i].RelayId] = 1;
-          relays_output_changed = 1;
-          resetEEPROMSaveCounter();
-          ProcessRelaysOutput();
-          Serial.print("Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> ON");
-        }
-
-      //Current time > Off time
-
-        /*
-      ****จะแก้ time overlap ยังไงจ้ะ****
-      CASE: Schedule มีมากกว่า 1 Timeline ที่ใช้ Relay ร่วมกัน
-            SCHEDULE A       •→――――――――――――→• 
-                             ↑ เปิด(ON_time) ↑ ปิด แต่โดนอันล่างทับ ดังนั้นห้ามปิด(Overlap) << ตรงนี้แหละมีปัญหา
-            SCHEDULE B       •→――――――――――――――――――――――→•
-                             ↑ เปิด(ON_time)           ↑ ปิดจริงๆ(No overlap)
-            SCHEDULE C •→――――――――――――――――――――――→•
-                       ↑ เปิด(ON_time)           ↑ ปิด ห้ามปิด โดนอันบนทับ(Overlap)
-            SCHEDULE D                                     •→――――――――→•
-                                                           ↑ เปิด      ↑ ปิด(No overlap)
-      SOLUTION: Loop through schedules where there are use same relay and store it to an array
-                Find overlap time by ON_time A (INSIDE) Andljdhfgajdhfgakdhfga kjhfga jlkdhfgaldkfjhaldfkja hlfkj hvlkjdhfvlkjhsdflvkjhsdlfkhg
-                Select one SCHEDULE to be use WHERE OFF_time > others schedule
-      */
-      } else if (curTime == schedules[i].TimeOff) { 
-        if (relays_output[schedules[i].RelayId]){
-          relays_output[schedules[i].RelayId] = 0;
-          relays_output_changed = 1;
-          resetEEPROMSaveCounter();
-          Serial.print("Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> OFF");
-          ProcessRelaysOutput();
-        }
-      }
-    }
-  }
-}
-
-void tick()
-{
-  // Serial.println(nowSeconds);
-
-  if ((uint8_t)digitalRead(LED_SYNC_SUCCESS_PIN) != time_sync_done)
-  {
-    digitalWrite(LED_SYNC_SUCCESS_PIN, time_sync_done);
-  }
-
-  if (time_sync_done) {
-    acetime_t now = systemClock.getNow();
-    auto bangkokTime = ZonedDateTime::forEpochSeconds(now, bangkokTz);
-    ProcessScheduler(bangkokTime.hour(), bangkokTime.minute());
-    if (!print_current_time){
-      print_current_time = 1;
-      bangkokTime.printTo(SERIAL_PORT_MONITOR);
-      SERIAL_PORT_MONITOR.println("");
-    }
-  }
-
-  checkEEPROMConfigChanged();
 }
 
 void checkEEPROMConfigChanged(){
@@ -334,17 +231,17 @@ void checkEEPROMConfigChanged(){
 
       if (schedule_changed){
         schedule_changed = 0;
-        SaveScheduleConfig();
+        saveScheduleConfig();
       }
 
       if (relay_mode_changed){
         relay_mode_changed = 0;
-        SaveSystemConfig();
+        saveSystemConfig();
       }
 
       if (relays_output_changed){
         relays_output_changed = 0;
-        SaveRelayOutputConfig();
+        saveRelayOutputConfig();
       }
     }
   }
@@ -354,31 +251,48 @@ void resetEEPROMSaveCounter(){
   eeprom_save_left_secs = 10;
 }
 
-void ProcessRelaysOutput(){
-  Serial.println("ProcessRelaysOutput");
-  for (uint8_t relay_index = 0; relay_index < MAX_RELAY; relay_index++){
-    digitalWrite(relays_output_pin[relay_index], relays_output[relay_index]);
+void clearOutData(){
+  msgOut.Command = Command_t::InvalidMessage;
+  msgOut.Parameter0 = 0;
+  msgOut.Parameter1 = 0;
+  msgOut.Parameter2 = 0;
+  msgOut.raw[0] = 0;
+  msgOut.raw[1] = 0;
+  msgOut.raw[2] = 0;
+  msgOut.raw[3] = 0;
+}
+
+void syncTimeNow(){
+  Serial.println("Getting internet time..");
+  nowSeconds = ntpClock.getNow();
+  time_sync_done = (uint8_t)(nowSeconds > 646832014);
+  if (time_sync_done){
+    Serial.println("Synced.");
+    auto bangkokTime = ZonedDateTime::forEpochSeconds(nowSeconds, bangkokTz);
+    systemClock.setNow(bangkokTime.toEpochSeconds());
+  } else {
+    Serial.println("Failed.");
   }
 }
 
-uint8_t ValidRelayId(uint8_t relayId){
+uint8_t validRelayId(uint8_t relayId){
    return relayId < MAX_RELAY;
 }
 
-uint8_t ValidRelayMode(uint8_t mode){
+uint8_t validRelayMode(uint8_t mode){
    return mode < 2;
 }
 
-uint8_t ValidRequestRelay(){
+uint8_t validRequestRelay(){
   // msgIn.Parameter0; //Relay Index
   // msgIn.Parameter1; //Relay Mode
-  if (!ValidRelayId(msgIn.Parameter0)){
+  if (!validRelayId(msgIn.Parameter0)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::ManualSetRelay;
     msgOut.Parameter1 = 1;
     return 0;
   }
-  if (!ValidRelayMode(msgIn.Parameter1)){
+  if (!validRelayMode(msgIn.Parameter1)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::ManualSetRelay;
     msgOut.Parameter1 = 2;
@@ -387,20 +301,20 @@ uint8_t ValidRequestRelay(){
   return 1;
 }
 
-uint8_t ValidScheduleId(uint8_t scheduleId){
+uint8_t validScheduleId(uint8_t scheduleId){
   return scheduleId < MAX_SCHEDULES;
 }
 
-uint8_t ValidRequestSchedule(){
+uint8_t validRequestSchedule(){
   // msgIn.Parameter0; //Schedule Index
   // msgIn.Parameter1; //Relay Mode
-  if (!ValidScheduleId(msgIn.Parameter0)){
+  if (!validScheduleId(msgIn.Parameter0)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::SetSchedule;
     msgOut.Parameter1 = 1;
     return 0;
   }
-  if (!ValidRelayId(scheduleIn.RelayId)){
+  if (!validRelayId(scheduleIn.RelayId)){
     msgOut.Command = Command_t::InvalidParameter;
     msgOut.Parameter0 = Command_t::SetSchedule;
     msgOut.Parameter1 = 2;
@@ -415,7 +329,7 @@ uint8_t ValidRequestSchedule(){
   return 1;
 }
 
-void ProcessRequest(){
+void processRequest(){
   switch (msgIn.Command)
     {
     case Command_t::Ping:
@@ -449,14 +363,14 @@ void ProcessRequest(){
       Serial.print("Parameter2: ");Serial.println(msgIn.Parameter2);
 
       msgOut.Command = Command_t::ManualSetRelay;
-      if (ValidRequestRelay()){
+      if (validRequestRelay()){
         mode = 1;
         relays_output[msgIn.Parameter0] = msgIn.Parameter1;
         msgOut.Parameter0 = msgIn.Parameter0;
         msgOut.Parameter1 = msgIn.Parameter1;
         relays_output_changed = 1;
         resetEEPROMSaveCounter();
-        ProcessRelaysOutput();
+        processRelaysOutput();
       }
       break;
     // case Command_t::GetRelayMode: // for separate mode per relay
@@ -470,14 +384,14 @@ void ProcessRequest(){
     case Command_t::GetRelayMode:
       Serial.println("GetRelayMode");
       msgOut.Command = Command_t::GetRelayMode;
-      if (ValidRequestRelay()){
+      if (validRequestRelay()){
         msgOut.Parameter0 = mode; //relay Index
       }
       break;
     case Command_t::GetRelayState:
       Serial.println("GetRelayState");
       msgOut.Command = Command_t::GetRelayState;
-      if (ValidRequestRelay()){
+      if (validRequestRelay()){
         msgOut.Parameter0 = msgIn.Parameter0; //relay Index
         msgOut.Parameter1 = relays_output[msgIn.Parameter0]; //relay status
       }
@@ -485,7 +399,7 @@ void ProcessRequest(){
     case Command_t::SetSchedule:
       Serial.println("SetSchedule");
       msgOut.Command = Command_t::SetSchedule;
-      if (ValidRequestSchedule()){
+      if (validRequestSchedule()){
         msgOut.Parameter0 = msgIn.Parameter0; //Schedule Index
 
         Serial.print("TimeOn: ");
@@ -506,7 +420,7 @@ void ProcessRequest(){
       Serial.println("GetSchedule");
       msgOut.Command = Command_t::GetSchedule;
       // if ()
-      if (ValidScheduleId(msgIn.Parameter0)){
+      if (validScheduleId(msgIn.Parameter0)){
         reply_schedule = 1;
         msgOut.Parameter0 = msgIn.Parameter0; //Schedule Index
         scheduleOut = schedules[msgIn.Parameter0];
@@ -529,15 +443,81 @@ void ProcessRequest(){
     }
 }
 
-void clearOutData(){
-  msgOut.Command = Command_t::InvalidMessage;
-  msgOut.Parameter0 = 0;
-  msgOut.Parameter1 = 0;
-  msgOut.Parameter2 = 0;
-  msgOut.raw[0] = 0;
-  msgOut.raw[1] = 0;
-  msgOut.raw[2] = 0;
-  msgOut.raw[3] = 0;
+void processScheduler(uint8_t hour, uint8_t minute){
+  if (mode == 1){
+    return;
+  }
+  for (uint8_t i = 0; i < MAX_SCHEDULES; i++){
+    if (schedules[i].Enable){
+      // uint8_t sOnHour = (uint8_t)(schedules[i].TimeOn / 100);
+      // uint8_t sOnMin = (uint8_t)(schedules[i].TimeOn % 100);
+      uint16_t curTime = (hour * 100) + minute;
+      // Between On time and Off time
+      if (curTime >= schedules[i].TimeOn && curTime < schedules[i].TimeOff){
+        if (!relays_output[schedules[i].RelayId]){
+          relays_output[schedules[i].RelayId] = 1;
+          relays_output_changed = 1;
+          resetEEPROMSaveCounter();
+          processRelaysOutput();
+          Serial.print("Scheduler ");Serial.print(i);Serial.print(" Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> ON");
+        }
+
+      //Current time > Off time
+
+        /*
+      ****จะแก้ time overlap ยังไงจ้ะ****
+      CASE: Schedule มีมากกว่า 1 Timeline ที่ใช้ Relay ร่วมกัน
+            SCHEDULE A       •→――――――――――――→• 
+                             ↑ เปิด(ON_time) ↑ ปิด แต่โดนอันล่างทับ ดังนั้นห้ามปิด(Overlap) << ตรงนี้แหละมีปัญหา
+            SCHEDULE B       •→――――――――――――――――――――――→•
+                             ↑ เปิด(ON_time)           ↑ ปิดจริงๆ(No overlap)
+            SCHEDULE C •→――――――――――――――――――――――→•
+                       ↑ เปิด(ON_time)           ↑ ปิด ห้ามปิด โดนอันบนทับ(Overlap)
+            SCHEDULE D                                     •→――――――――→•
+                                                           ↑ เปิด      ↑ ปิด(No overlap)
+      SOLUTION: Loop through schedules where there are use same relay and store it to an array
+                Find overlap time by ON_time A (INSIDE) Andljdhfgajdhfgakdhfga kjhfga jlkdhfgaldkfjhaldfkja hlfkj hvlkjdhfvlkjhsdflvkjhsdlfkhg
+                Select one SCHEDULE to be use WHERE OFF_time > others schedule
+      */
+      } else if (curTime == schedules[i].TimeOff) { 
+        if (relays_output[schedules[i].RelayId]){
+          relays_output[schedules[i].RelayId] = 0;
+          relays_output_changed = 1;
+          resetEEPROMSaveCounter();
+          Serial.print("Scheduler ");Serial.print(i);Serial.print(" Relay ");Serial.print(schedules[i].RelayId);Serial.println("-> OFF");
+          processRelaysOutput();
+        }
+      }
+    }
+  }
+}
+
+void processRelaysOutput(){
+  Serial.println("ProcessRelaysOutput");
+  for (uint8_t relay_index = 0; relay_index < MAX_RELAY; relay_index++){
+    digitalWrite(relays_output_pin[relay_index], relays_output[relay_index]);
+  }
+}
+
+void tick()
+{
+  if ((uint8_t)digitalRead(LED_SYNC_SUCCESS_PIN) != time_sync_done)
+  {
+    digitalWrite(LED_SYNC_SUCCESS_PIN, time_sync_done);
+  }
+
+  if (time_sync_done) {
+    acetime_t now = systemClock.getNow();
+    auto bangkokTime = ZonedDateTime::forEpochSeconds(now, bangkokTz);
+    processScheduler(bangkokTime.hour(), bangkokTime.minute());
+    if (!print_current_time){
+      print_current_time = 1;
+      bangkokTime.printTo(SERIAL_PORT_MONITOR);
+      SERIAL_PORT_MONITOR.println("");
+    }
+  }
+
+  checkEEPROMConfigChanged();
 }
 
 void tcpLoop(){
@@ -574,7 +554,7 @@ void tcpLoop(){
       {
         Serial.println("Magic match.");
         clearOutData();
-        ProcessRequest();
+        processRequest();
         // client.write((uint8_t *)&msgOut, sizeof(msgOut));
         if (reply_schedule){
           reply_schedule = 0;
@@ -602,19 +582,6 @@ void tcpLoop(){
   Serial.println("Client disonnected.");
 }
 
-void syncTimeNow(){
-  Serial.println("Getting internet time..");
-  nowSeconds = ntpClock.getNow();
-  time_sync_done = (uint8_t)(nowSeconds > 646832014);
-  if (time_sync_done){
-    Serial.println("Synced.");
-    auto bangkokTime = ZonedDateTime::forEpochSeconds(nowSeconds, bangkokTz);
-    systemClock.setNow(bangkokTime.toEpochSeconds());
-  } else {
-    Serial.println("Failed.");
-  }
-}
-
 void setup()
 {
   init_hardware();
@@ -622,11 +589,11 @@ void setup()
   digitalWrite(LED_BUILTIN, LOW);
   EEPROM.begin(60);
 
-  LoadSystemConfig();
-  LoadRelayOutputConfig();
-  LoadScheduleConfig();
+  loadSystemConfig();
+  loadRelayOutputConfig();
+  loadScheduleConfig();
 
-  ProcessRelaysOutput();
+  processRelaysOutput();
 
   systemClock.setup();
   init_pin();
@@ -639,6 +606,40 @@ void setup()
   server.begin();
 
   
+}
+
+void buttonLoop(){
+  if (button0){
+    button0 = 0;
+    blink = 1;
+
+    mode = 0;
+
+    relay_mode_changed = 1;
+    resetEEPROMSaveCounter();
+  } else if (button1){
+    button1 = 0;
+
+    mode = 1;
+
+    relays_output[0] = !relays_output[0];
+    processRelaysOutput();
+
+    relays_output_changed = 1;
+    relay_mode_changed = 1;
+    resetEEPROMSaveCounter();
+  } else if (button2){
+    button2 = 0;
+
+    mode = 1;
+
+    relays_output[1] = !relays_output[1];
+    processRelaysOutput();
+
+    relays_output_changed = 1;
+    relay_mode_changed = 1;
+    resetEEPROMSaveCounter();
+  }
 }
 
 void blinkLoop(){
@@ -662,8 +663,6 @@ void loop()
   if (millis() - debounce_millis >= 500){
     debounce_millis = millis();
     buttonLoop();
-    blinkLoop();
-    
   }
 
   if (millis() - blink_millis >= 100){
