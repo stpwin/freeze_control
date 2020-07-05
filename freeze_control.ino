@@ -85,9 +85,9 @@ uint8_t schedule_changed = 0;
 uint8_t relay_mode_changed = 0;
 uint8_t relays_output_changed = 0;
 uint8_t eeprom_save_left_secs = 10; // 10 seconds
-uint8_t mode = 0; // 0 = Timer, 1 = Manual
+volatile uint8_t mode = 0; // 0 = Timer, 1 = Manual
 // volatile uint8_t relays_manual_button_pressed[MAX_RELAY] = {1}; 
-uint8_t relays_output[MAX_RELAY] = {0};
+volatile uint8_t relays_output[MAX_RELAY] = {0};
 
 uint8_t print_current_time = 0;
 uint8_t reply_schedule = 0;
@@ -95,6 +95,11 @@ uint8_t ntp_first_run = 1;
 unsigned long ntp_millis = 0;
 unsigned long second_millis = 0;
 unsigned long debounce_millis = 0;
+unsigned long blink_millis = 0;
+
+uint8_t blink = 0;
+uint8_t blink_count = 10;
+uint8_t blink_state = 0;
 
 volatile uint8_t button0 = 0;
 volatile uint8_t button1 = 0;
@@ -115,7 +120,7 @@ ICACHE_RAM_ATTR void ButtonManualRelayInterrupt1(){
 void buttonLoop(){
   if (button0){
     button0 = 0;
-
+    blink = 1;
     mode = 0;
     relay_mode_changed = 1;
     resetEEPROMSaveCounter();
@@ -258,7 +263,7 @@ void ProcessScheduler(uint8_t hour, uint8_t minute){
       // uint8_t sOnMin = (uint8_t)(schedules[i].TimeOn % 100);
       uint16_t curTime = (hour * 100) + minute;
       // Between On time and Off time
-      if (curTime >= schedules[i].TimeOn && curTime < schedules[i].TimeOff){
+      if (curTime >= schedules[i].TimeOn && curTime != schedules[i].TimeOff){
         if (!relays_output[schedules[i].RelayId]){
           relays_output[schedules[i].RelayId] = 1;
           relays_output_changed = 1;
@@ -284,7 +289,7 @@ void ProcessScheduler(uint8_t hour, uint8_t minute){
                 Find overlap time by ON_time A (INSIDE) Andljdhfgajdhfgakdhfga kjhfga jlkdhfgaldkfjhaldfkja hlfkj hvlkjdhfvlkjhsdflvkjhsdlfkhg
                 Select one SCHEDULE to be use WHERE OFF_time > others schedule
       */
-      } else if (curTime >= schedules[i].TimeOff) { 
+      } else if (curTime == schedules[i].TimeOff) { 
         if (relays_output[schedules[i].RelayId]){
           relays_output[schedules[i].RelayId] = 0;
           relays_output_changed = 1;
@@ -612,6 +617,8 @@ void syncTimeNow(){
 
 void setup()
 {
+  init_hardware();
+  
   digitalWrite(LED_BUILTIN, LOW);
   EEPROM.begin(60);
 
@@ -623,7 +630,7 @@ void setup()
 
   systemClock.setup();
   init_pin();
-	init_hardware();
+	
   init_wifi();
   init_communication();
 
@@ -634,14 +641,34 @@ void setup()
   
 }
 
+void blinkLoop(){
+  if (blink){
+    blink_count--;
+    if (blink_count == 0){
+      blink_count = 10;
+      blink = 0;
+      digitalWrite(LED_SYNC_SUCCESS_PIN, time_sync_done);
+    }
+    blink_state = !blink_state;
+    digitalWrite(LED_SYNC_SUCCESS_PIN, blink_state);
+  }
+}
+
 void loop()
 {
 	wifi.loop();
   systemClock.loop();
 
-  if (millis() - debounce_millis >= 300){
+  if (millis() - debounce_millis >= 500){
     debounce_millis = millis();
     buttonLoop();
+    blinkLoop();
+    
+  }
+
+  if (millis() - blink_millis >= 100){
+    blink_millis = millis();
+    blinkLoop();
   }
 
   if (wifi.connected()){
