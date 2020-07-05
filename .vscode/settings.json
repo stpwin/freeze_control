@@ -1,6 +1,9 @@
 {
   "files.associations": {
     "*.js": "javascript",
-    "functional": "cpp"
+    "functional": "cpp",
+    "ostream": "cpp",
+    "*.tcc": "cpp",
+    "chrono": "cpp"
   }
 }
